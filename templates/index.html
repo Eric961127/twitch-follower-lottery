@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="免費 Twitch 追蹤者抽獎器">
+  <title>Twitch 追蹤者抽獎器</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="glow g1"></div>
+  <div class="glow g2"></div>
+
+  <main class="container">
+    <section class="card">
+      <div class="logo">🎰</div>
+      <h1>Twitch 追蹤者抽獎器</h1>
+      <p class="subtitle">登入 Twitch，更新你的追蹤者名單，再公平隨機抽出幸運觀眾。</p>
+
+      {% if not user %}
+        <a class="btn twitch" href="/login">使用 Twitch 登入</a>
+        <p class="note">只要求讀取頻道追蹤者所需的 Twitch 權限。</p>
+      {% else %}
+        <div class="profile">
+          <img src="{{ user.profile_image_url }}" alt="" class="avatar">
+          <div class="profile-text">
+            <small>已登入頻道</small>
+            <strong>{{ user.display_name }}</strong>
+          </div>
+          <a class="logout" href="/logout">登出</a>
+        </div>
+
+        <div class="stats">
+          <div class="stat"><span>目前追蹤者</span><b id="followerCount">尚未更新</b></div>
+          <div class="stat"><span>名單狀態</span><b id="listStatus">等待更新</b></div>
+        </div>
+
+        <div class="actions">
+          <button id="updateButton" class="btn secondary">🔄 更新追蹤者名單</button>
+          <button id="drawButton" class="btn twitch" disabled>🎲 開始抽獎</button>
+        </div>
+
+        <p id="message" class="message">請先更新追蹤者名單</p>
+
+        <div class="winner">
+          <span>🎉 中獎者</span>
+          <strong id="winner">等待抽獎...</strong>
+        </div>
+      {% endif %}
+
+      <footer>免費工具 · 不會要求你的 Twitch 密碼</footer>
+    </section>
+  </main>
+
+  {% if user %}
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  {% endif %}
+</body>
+</html>
