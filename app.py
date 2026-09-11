@@ -138,19 +138,45 @@ def followers():
         return jsonify(ok=True,count=len(arr),followers=arr)
     except requests.RequestException as e:return jsonify(ok=False,error=f'Twitch API 連線失敗：{e}'),502
 
-@app.route('/api/settings')
+@app.route('/api/settings',methods=['GET','PATCH'])
 def settings():
-    u=require_user();
+    u=require_user()
     if not u:return jsonify(ok=False,error='尚未登入'),401
-    c=db(); row=c.execute('SELECT * FROM channels WHERE channel_id=?',(u['id'],)).fetchone(); c.close()
-    return jsonify(ok=True,settings=dict(row) if row else {})
+    if request.method=='GET':
+        c=db(); row=c.execute('SELECT * FROM channels WHERE channel_id=?',(u['id'],)).fetchone(); c.close()
+        return jsonify(ok=True,settings=dict(row) if row else {})
+
+    body=request.get_json(silent=True) or {}
+    try:
+        cost=max(1,int(body.get('reward_cost',500)))
+        unlimited=bool(body.get('unlimited',False))
+        max_extra=-1 if unlimited else max(1,int(body.get('max_extra',10)))
+    except (TypeError,ValueError):
+        return jsonify(ok=False,error='設定格式錯誤'),400
+
+    c=db(); row=c.execute('SELECT reward_id FROM channels WHERE channel_id=?',(u['id'],)).fetchone()
+    c.execute('UPDATE channels SET reward_cost=?,max_extra=? WHERE channel_id=?',(cost,max_extra,u['id']))
+    c.commit(); c.close()
+
+    twitch_updated=False; twitch_error=None
+    if row and row['reward_id'] and body.get('sync_twitch',True):
+        payload={'cost':cost,'is_max_per_user_per_stream_enabled':not unlimited}
+        if not unlimited: payload['max_per_user_per_stream']=max_extra
+        try:
+            r=requests.patch('https://api.twitch.tv/helix/channel_points/custom_rewards',headers=twitch_headers(),params={'broadcaster_id':u['id'],'id':row['reward_id']},json=payload,timeout=20)
+            twitch_updated=r.ok
+            if not r.ok: twitch_error=r.text
+        except requests.RequestException as e:
+            twitch_error=str(e)
+    return jsonify(ok=True,reward_cost=cost,max_extra=max_extra,unlimited=unlimited,twitch_updated=twitch_updated,twitch_error=twitch_error)
 
 @app.route('/api/reward',methods=['POST'])
 def create_reward():
     u=require_user(); headers=twitch_headers()
     if not u:return jsonify(ok=False,error='尚未登入'),401
-    body=request.get_json(silent=True) or {}; cost=max(1,int(body.get('cost',500))); limit=max(1,int(body.get('max_extra',10))); title=(body.get('title') or '🎟️ 抽獎券')[:45]
-    payload={'title':title,'cost':cost,'prompt':'兌換後會增加本次抽獎券 1 張','is_max_per_user_per_stream_enabled':True,'max_per_user_per_stream':limit,'should_redemptions_skip_request_queue':True}
+    body=request.get_json(silent=True) or {}; cost=max(1,int(body.get('cost',500))); unlimited=bool(body.get('unlimited',False)); limit=-1 if unlimited else max(1,int(body.get('max_extra',10))); title=(body.get('title') or '🎟️ 抽獎券')[:45]
+    payload={'title':title,'cost':cost,'prompt':'兌換後會增加本次抽獎券 1 張','is_max_per_user_per_stream_enabled':not unlimited,'should_redemptions_skip_request_queue':True}
+    if not unlimited: payload['max_per_user_per_stream']=limit
     r=requests.post('https://api.twitch.tv/helix/channel_points/custom_rewards',headers=headers,params={'broadcaster_id':u['id']},json=payload,timeout=20)
     if not r.ok:return jsonify(ok=False,error='建立 Twitch 頻道點數獎勵失敗：'+r.text),r.status_code
     reward=r.json()['data'][0]; c=db(); c.execute('UPDATE channels SET reward_id=?,reward_title=?,reward_cost=?,max_extra=? WHERE channel_id=?',(reward['id'],title,cost,limit,u['id'])); c.commit(); c.close()
@@ -183,7 +209,7 @@ def eventsub():
             if not exists:
                 c.execute('INSERT INTO tickets(channel_id,user_id,login,name,base_tickets) VALUES(?,?,?,?,1) ON CONFLICT(channel_id,user_id) DO NOTHING',(channel,uid,e.get('user_login',''),e.get('user_name','')))
                 row=c.execute('SELECT redeemed_tickets FROM tickets WHERE channel_id=? AND user_id=?',(channel,uid)).fetchone(); current=row['redeemed_tickets'] if row else 0
-                if current < cfg['max_extra']:
+                if cfg['max_extra'] < 0 or current < cfg['max_extra']:
                     c.execute('UPDATE tickets SET redeemed_tickets=redeemed_tickets+1,login=?,name=? WHERE channel_id=? AND user_id=?',(e.get('user_login',''),e.get('user_name',''),channel,uid))
                 c.execute('INSERT INTO redemptions VALUES(?,?,?,?,?)',(rid,channel,uid,reward,e.get('redeemed_at',now())))
                 c.commit()
