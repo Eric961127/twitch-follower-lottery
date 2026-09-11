@@ -51,6 +51,7 @@ def db():
             "CREATE TABLE IF NOT EXISTS tickets(channel_id TEXT, user_id TEXT, login TEXT, name TEXT, base_tickets INTEGER DEFAULT 1, redeemed_tickets BIGINT DEFAULT 0, admin_adjustment BIGINT DEFAULT 0, PRIMARY KEY(channel_id,user_id))" ,
             "CREATE TABLE IF NOT EXISTS redemptions(redemption_id TEXT PRIMARY KEY, channel_id TEXT, user_id TEXT, reward_id TEXT, redeemed_at TEXT)" ,
             "CREATE TABLE IF NOT EXISTS audit(id BIGSERIAL PRIMARY KEY, channel_id TEXT, user_id TEXT, name TEXT, old_adjustment BIGINT, new_adjustment BIGINT, reason TEXT, changed_at TEXT)" ,
+            "CREATE TABLE IF NOT EXISTS lottery_settings(channel_id TEXT PRIMARY KEY, reward_cost INTEGER NOT NULL DEFAULT 500, max_extra BIGINT NOT NULL DEFAULT 10, updated_at TEXT)" ,
         ]
         for statement in statements:
             conn.execute(statement)
@@ -64,6 +65,7 @@ def db():
     CREATE TABLE IF NOT EXISTS tickets(channel_id TEXT, user_id TEXT, login TEXT, name TEXT, base_tickets INTEGER DEFAULT 1, redeemed_tickets INTEGER DEFAULT 0, admin_adjustment INTEGER DEFAULT 0, PRIMARY KEY(channel_id,user_id));
     CREATE TABLE IF NOT EXISTS redemptions(redemption_id TEXT PRIMARY KEY, channel_id TEXT, user_id TEXT, reward_id TEXT, redeemed_at TEXT);
     CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT, user_id TEXT, name TEXT, old_adjustment INTEGER, new_adjustment INTEGER, reason TEXT, changed_at TEXT);
+    CREATE TABLE IF NOT EXISTS lottery_settings(channel_id TEXT PRIMARY KEY, reward_cost INTEGER NOT NULL DEFAULT 500, max_extra INTEGER NOT NULL DEFAULT 10, updated_at TEXT);
     """)
     conn.commit()
     return DBWrapper(conn, postgres=False)
@@ -81,7 +83,17 @@ def cache_key():
 def require_user(): return session.get('user')
 
 def ensure_channel(user):
-    c=db(); c.execute('INSERT INTO channels(channel_id,display_name,created_at) VALUES(?,?,?) ON CONFLICT(channel_id) DO NOTHING',(user['id'],user['display_name'],now())); c.execute('UPDATE channels SET display_name=? WHERE channel_id=?',(user['display_name'],user['id'])); c.commit(); c.close()
+    c=db()
+    c.execute('INSERT INTO channels(channel_id,display_name,created_at) VALUES(?,?,?) ON CONFLICT(channel_id) DO NOTHING',(user['id'],user['display_name'],now()))
+    c.execute('UPDATE channels SET display_name=? WHERE channel_id=?',(user['display_name'],user['id']))
+    # Settings are stored separately so later logins/redeploys can never reset them.
+    existing=c.execute('SELECT channel_id FROM lottery_settings WHERE channel_id=?',(user['id'],)).fetchone()
+    if not existing:
+        legacy=c.execute('SELECT reward_cost,max_extra FROM channels WHERE channel_id=?',(user['id'],)).fetchone()
+        rc=(legacy['reward_cost'] if legacy and legacy['reward_cost'] is not None else 500)
+        me=(legacy['max_extra'] if legacy and legacy['max_extra'] is not None else 10)
+        c.execute('INSERT INTO lottery_settings(channel_id,reward_cost,max_extra,updated_at) VALUES(?,?,?,?)',(user['id'],rc,me,now()))
+    c.commit(); c.close()
 
 def upsert_ticket(channel_id,user_id,login,name,base=1):
     c=db(); c.execute('INSERT INTO tickets(channel_id,user_id,login,name,base_tickets) VALUES(?,?,?,?,?) ON CONFLICT(channel_id,user_id) DO NOTHING',(channel_id,user_id,login,name,base)); c.execute('UPDATE tickets SET login=?,name=? WHERE channel_id=? AND user_id=?',(login,name,channel_id,user_id)); c.commit(); c.close()
@@ -142,9 +154,12 @@ def followers():
 def settings():
     u=require_user()
     if not u:return jsonify(ok=False,error='尚未登入'),401
+    ensure_channel(u)
     if request.method=='GET':
-        c=db(); row=c.execute('SELECT * FROM channels WHERE channel_id=?',(u['id'],)).fetchone(); c.close()
-        return jsonify(ok=True,settings=dict(row) if row else {})
+        c=db(); row=c.execute('SELECT reward_cost,max_extra,updated_at FROM lottery_settings WHERE channel_id=?',(u['id'],)).fetchone(); c.close()
+        data=dict(row) if row else {'reward_cost':500,'max_extra':10}
+        data['unlimited']=int(data.get('max_extra',10))<0
+        return jsonify(ok=True,settings=data,storage='postgres' if USE_POSTGRES else 'sqlite')
 
     body=request.get_json(silent=True) or {}
     try:
@@ -154,8 +169,11 @@ def settings():
     except (TypeError,ValueError):
         return jsonify(ok=False,error='設定格式錯誤'),400
 
-    c=db(); row=c.execute('SELECT reward_id FROM channels WHERE channel_id=?',(u['id'],)).fetchone()
+    c=db()
+    c.execute('INSERT INTO lottery_settings(channel_id,reward_cost,max_extra,updated_at) VALUES(?,?,?,?) ON CONFLICT(channel_id) DO UPDATE SET reward_cost=excluded.reward_cost,max_extra=excluded.max_extra,updated_at=excluded.updated_at',(u['id'],cost,max_extra,now()))
+    # Keep legacy columns in sync for reward creation / backwards compatibility.
     c.execute('UPDATE channels SET reward_cost=?,max_extra=? WHERE channel_id=?',(cost,max_extra,u['id']))
+    row=c.execute('SELECT reward_id FROM channels WHERE channel_id=?',(u['id'],)).fetchone()
     c.commit(); c.close()
 
     twitch_updated=False; twitch_error=None
@@ -168,7 +186,7 @@ def settings():
             if not r.ok: twitch_error=r.text
         except requests.RequestException as e:
             twitch_error=str(e)
-    return jsonify(ok=True,reward_cost=cost,max_extra=max_extra,unlimited=unlimited,twitch_updated=twitch_updated,twitch_error=twitch_error)
+    return jsonify(ok=True,reward_cost=cost,max_extra=max_extra,unlimited=unlimited,twitch_updated=twitch_updated,twitch_error=twitch_error,storage='postgres' if USE_POSTGRES else 'sqlite')
 
 @app.route('/api/reward',methods=['POST'])
 def create_reward():
@@ -179,7 +197,7 @@ def create_reward():
     if not unlimited: payload['max_per_user_per_stream']=limit
     r=requests.post('https://api.twitch.tv/helix/channel_points/custom_rewards',headers=headers,params={'broadcaster_id':u['id']},json=payload,timeout=20)
     if not r.ok:return jsonify(ok=False,error='建立 Twitch 頻道點數獎勵失敗：'+r.text),r.status_code
-    reward=r.json()['data'][0]; c=db(); c.execute('UPDATE channels SET reward_id=?,reward_title=?,reward_cost=?,max_extra=? WHERE channel_id=?',(reward['id'],title,cost,limit,u['id'])); c.commit(); c.close()
+    reward=r.json()['data'][0]; c=db(); c.execute('UPDATE channels SET reward_id=?,reward_title=?,reward_cost=?,max_extra=? WHERE channel_id=?',(reward['id'],title,cost,limit,u['id'])); c.execute('INSERT INTO lottery_settings(channel_id,reward_cost,max_extra,updated_at) VALUES(?,?,?,?) ON CONFLICT(channel_id) DO UPDATE SET reward_cost=excluded.reward_cost,max_extra=excluded.max_extra,updated_at=excluded.updated_at',(u['id'],cost,limit,now())); c.commit(); c.close()
     sub_result=subscribe_eventsub(u['id'],reward['id'],session.get('access_token'))
     return jsonify(ok=True,reward=reward,eventsub=sub_result)
 

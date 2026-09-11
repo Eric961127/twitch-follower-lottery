@@ -6,4 +6,4 @@
 <p id="message" class="message">準備完成</p><div class="winner"><span>🎉 中獎者</span><strong id="winner">等待抽獎...</strong><small id="drawInfo"></small></div>
 <div class="stats"><div class="stat"><span>參加人數</span><b id="participantCount">0</b></div><div class="stat"><span>總票數</span><b id="ticketCount">0</b></div></div>
 <h2>公開票數 / 管理員修正</h2><div class="searchbar"><input id="ticketSearch" type="search" placeholder="🔎 搜尋 Twitch 名稱 / ID"><span id="searchCount"></span></div><div class="table-wrap"><table><thead><tr><th>觀眾</th><th>基本</th><th>點數換票</th><th>修正</th><th>總票</th><th>機率</th><th>管理</th></tr></thead><tbody id="ticketBody"></tbody></table></div>
-{% endif %}<footer>抽獎使用系統安全亂數；管理員修正會留下紀錄。</footer></section></main>{% if user %}<script src="{{ url_for('static',filename='app.js') }}"></script>{% endif %}</body></html>
+{% endif %}<footer>抽獎使用系統安全亂數；管理員修正會留下紀錄。</footer></section></main>{% if user %}<script src="{{ url_for('static',filename='app.js',v='settings-v2') }}"></script>{% endif %}</body></html>
