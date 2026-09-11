@@ -1,70 +1,8 @@
-const updateButton = document.getElementById("updateButton");
-const drawButton = document.getElementById("drawButton");
-const followerCount = document.getElementById("followerCount");
-const listStatus = document.getElementById("listStatus");
-const winnerElement = document.getElementById("winner");
-const message = document.getElementById("message");
-
-let followers = [];
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-updateButton.addEventListener("click", async () => {
-  updateButton.disabled = true;
-  drawButton.disabled = true;
-  followerCount.textContent = "更新中...";
-  listStatus.textContent = "讀取 Twitch 中";
-  winnerElement.textContent = "等待抽獎...";
-  message.textContent = "正在取得最新追蹤者名單...";
-
-  try {
-    const response = await fetch("/api/followers", { credentials: "same-origin" });
-    const data = await response.json();
-
-    if (!response.ok || !data.ok) throw new Error(data.error || "更新失敗");
-
-    followers = data.followers;
-    followerCount.textContent = `${data.count} 人`;
-    listStatus.textContent = "已更新";
-    message.textContent = `✅ 已成功取得 ${data.count} 位追蹤者`;
-    drawButton.disabled = data.count === 0;
-  } catch (error) {
-    followers = [];
-    followerCount.textContent = "更新失敗";
-    listStatus.textContent = "錯誤";
-    message.textContent = "❌ " + error.message;
-  } finally {
-    updateButton.disabled = false;
-  }
-});
-
-drawButton.addEventListener("click", async () => {
-  if (!followers.length) return;
-
-  drawButton.disabled = true;
-  updateButton.disabled = true;
-  message.textContent = "🎰 抽獎中...";
-
-  for (let i = 0; i < 28; i++) {
-    const person = followers[Math.floor(Math.random() * followers.length)];
-    winnerElement.textContent = person.name;
-    await sleep(45 + i * 8);
-  }
-
-  try {
-    const response = await fetch("/api/draw", {
-      method: "POST",
-      credentials: "same-origin"
-    });
-    const data = await response.json();
-
-    if (!response.ok || !data.ok) throw new Error(data.error || "抽獎失敗");
-
-    winnerElement.textContent = `🎉 ${data.winner.name} 🎉`;
-    message.textContent = "🎊 抽獎完成！";
-  } catch (error) {
-    message.textContent = "❌ " + error.message;
-  } finally {
-    drawButton.disabled = false;
-    updateButton.disabled = false;
-  }
-});
+const $=id=>document.getElementById(id), msg=$('message');
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function loadTickets(){const r=await fetch('/api/tickets'),d=await r.json();if(!d.ok)return;$('participantCount').textContent=d.participants;$('ticketCount').textContent=d.total_tickets;$('ticketBody').innerHTML=d.people.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.base}</td><td>${x.redeemed}</td><td>${x.adjustment>0?'+':''}${x.adjustment}</td><td><b>${x.tickets}</b></td><td>${x.chance}%</td><td><button class="mini" onclick="editTicket('${x.user_id}',${x.tickets},'${esc(x.name)}')">修改</button></td></tr>`).join('')}
+async function editTicket(id,current,name){const total=prompt(`把 ${name} 的總票數改成多少？`,current);if(total===null)return;const reason=prompt('修改原因（例如：系統重複計票）','手動修正');if(reason===null)return;const r=await fetch('/api/admin/tickets/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({total:Number(total),reason})});const d=await r.json();msg.textContent=d.ok?'✅ 已修改票數':'❌ '+d.error;loadTickets()}
+$('updateButton').onclick=async()=>{msg.textContent='正在更新追隨者...';const r=await fetch('/api/followers'),d=await r.json();msg.textContent=d.ok?`✅ 已同步 ${d.count} 位追隨者，每人基本 1 張票`:'❌ '+d.error;loadTickets()};
+$('rewardButton').onclick=async()=>{if(!confirm('建立 Twitch 頻道點數「抽獎券」獎勵？'))return;msg.textContent='建立中...';const r=await fetch('/api/reward',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cost:Number($('rewardCost').value),max_extra:Number($('maxExtra').value)})}),d=await r.json();msg.textContent=d.ok?(d.eventsub?.ok?'✅ 抽獎券建立完成，而且已開始自動收票':'⚠️ 獎勵建立成功，但自動收票尚未連線：'+(d.eventsub?.error||'請檢查 EventSub 設定')):'❌ '+d.error};
+$('drawButton').onclick=async()=>{msg.textContent='🎰 加權抽獎中...';const r=await fetch('/api/draw',{method:'POST'}),d=await r.json();if(!d.ok){msg.textContent='❌ '+d.error;return}$('winner').textContent='🎉 '+d.winner.name+' 🎉';$('drawInfo').textContent=`${d.winner.tickets} 張票 / 全池 ${d.total_tickets} 張（抽獎當下機率 ${d.winner.chance}%）`;msg.textContent='🎊 抽獎完成！'};
+loadTickets();setInterval(loadTickets,5000);
