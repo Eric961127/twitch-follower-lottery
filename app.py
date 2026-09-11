@@ -208,11 +208,45 @@ def create_reward():
     sub_result=subscribe_eventsub(u['id'],reward['id'],session.get('access_token'))
     return jsonify(ok=True,reward=reward,eventsub=sub_result)
 
-def subscribe_eventsub(channel_id,reward_id,token):
-    if not PUBLIC_URL or not EVENTSUB_SECRET:return {'ok':False,'error':'尚未設定 PUBLIC_URL / EVENTSUB_SECRET'}
+def get_twitch_app_access_token():
+    if not TWITCH_CLIENT_ID or not TWITCH_CLIENT_SECRET:
+        return None, '尚未設定 TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET'
+    try:
+        r=requests.post('https://id.twitch.tv/oauth2/token',params={
+            'client_id':TWITCH_CLIENT_ID,
+            'client_secret':TWITCH_CLIENT_SECRET,
+            'grant_type':'client_credentials'
+        },timeout=20)
+        if not r.ok:
+            print(f'[EventSub] app token failed: HTTP {r.status_code} {r.text}', flush=True)
+            return None, f'取得 Twitch App Access Token 失敗：HTTP {r.status_code}'
+        return r.json().get('access_token'), None
+    except requests.RequestException as e:
+        print(f'[EventSub] app token exception: {e}', flush=True)
+        return None, str(e)
+
+def subscribe_eventsub(channel_id,reward_id,token=None):
+    if not PUBLIC_URL or not EVENTSUB_SECRET:
+        return {'ok':False,'error':'尚未設定 PUBLIC_URL / EVENTSUB_SECRET'}
+
+    # Webhook transport MUST use an App Access Token. The broadcaster's
+    # authorization/scopes are still granted via the same Client ID during OAuth.
+    app_token, err = get_twitch_app_access_token()
+    if not app_token:
+        return {'ok':False,'error':err or '無法取得 Twitch App Access Token'}
+
     payload={'type':'channel.channel_points_custom_reward_redemption.add','version':'1','condition':{'broadcaster_user_id':channel_id,'reward_id':reward_id},'transport':{'method':'webhook','callback':PUBLIC_URL+'/eventsub','secret':EVENTSUB_SECRET}}
-    r=requests.post('https://api.twitch.tv/helix/eventsub/subscriptions',headers={'Authorization':f'Bearer {token}','Client-Id':TWITCH_CLIENT_ID,'Content-Type':'application/json'},json=payload,timeout=20)
-    return {'ok':r.ok,'status':r.status_code,'body':r.json() if r.content else {}}
+    try:
+        r=requests.post('https://api.twitch.tv/helix/eventsub/subscriptions',headers={'Authorization':f'Bearer {app_token}','Client-Id':TWITCH_CLIENT_ID,'Content-Type':'application/json'},json=payload,timeout=20)
+        try:
+            body=r.json() if r.content else {}
+        except ValueError:
+            body={'raw':r.text}
+        print(f'[EventSub] subscribe HTTP {r.status_code}: {body}', flush=True)
+        return {'ok':r.ok,'status':r.status_code,'body':body}
+    except requests.RequestException as e:
+        print(f'[EventSub] subscribe exception: {e}', flush=True)
+        return {'ok':False,'error':str(e)}
 
 def valid_eventsub(raw):
     if not EVENTSUB_SECRET:return False
