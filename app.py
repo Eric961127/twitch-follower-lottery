@@ -4,6 +4,12 @@ from urllib.parse import urlencode
 import requests
 from flask import Flask, redirect, request, session, render_template, jsonify, url_for
 from dotenv import load_dotenv
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:
+    psycopg = None
+    dict_row = None
 
 load_dotenv()
 app = Flask(__name__)
@@ -18,16 +24,49 @@ PUBLIC_URL=os.getenv('PUBLIC_URL','').rstrip('/')
 EVENTSUB_SECRET=os.getenv('EVENTSUB_SECRET','')
 TWITCH_SCOPE='moderator:read:followers channel:manage:redemptions'
 DB_PATH=os.getenv('DB_PATH','lottery.db')
+DATABASE_URL=os.getenv('DATABASE_URL','').strip()
+USE_POSTGRES=bool(DATABASE_URL)
 follower_cache={}
 
+class DBWrapper:
+    def __init__(self, conn, postgres=False):
+        self.conn = conn
+        self.postgres = postgres
+    def _sql(self, query):
+        return query.replace('?', '%s') if self.postgres else query
+    def execute(self, query, params=()):
+        return self.conn.execute(self._sql(query), params)
+    def commit(self):
+        return self.conn.commit()
+    def close(self):
+        return self.conn.close()
+
 def db():
-    conn=sqlite3.connect(DB_PATH); conn.row_factory=sqlite3.Row
-    conn.executescript('''
+    if USE_POSTGRES:
+        if psycopg is None:
+            raise RuntimeError('DATABASE_URL 已設定，但 psycopg 尚未安裝')
+        conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        statements = [
+            "CREATE TABLE IF NOT EXISTS channels(channel_id TEXT PRIMARY KEY, display_name TEXT, reward_id TEXT, reward_title TEXT DEFAULT '🎟️ 抽獎券', reward_cost INTEGER DEFAULT 500, max_extra BIGINT DEFAULT 10, created_at TEXT)" ,
+            "CREATE TABLE IF NOT EXISTS tickets(channel_id TEXT, user_id TEXT, login TEXT, name TEXT, base_tickets INTEGER DEFAULT 1, redeemed_tickets BIGINT DEFAULT 0, admin_adjustment BIGINT DEFAULT 0, PRIMARY KEY(channel_id,user_id))" ,
+            "CREATE TABLE IF NOT EXISTS redemptions(redemption_id TEXT PRIMARY KEY, channel_id TEXT, user_id TEXT, reward_id TEXT, redeemed_at TEXT)" ,
+            "CREATE TABLE IF NOT EXISTS audit(id BIGSERIAL PRIMARY KEY, channel_id TEXT, user_id TEXT, name TEXT, old_adjustment BIGINT, new_adjustment BIGINT, reason TEXT, changed_at TEXT)" ,
+        ]
+        for statement in statements:
+            conn.execute(statement)
+        conn.commit()
+        return DBWrapper(conn, postgres=True)
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
     CREATE TABLE IF NOT EXISTS channels(channel_id TEXT PRIMARY KEY, display_name TEXT, reward_id TEXT, reward_title TEXT DEFAULT '🎟️ 抽獎券', reward_cost INTEGER DEFAULT 500, max_extra INTEGER DEFAULT 10, created_at TEXT);
     CREATE TABLE IF NOT EXISTS tickets(channel_id TEXT, user_id TEXT, login TEXT, name TEXT, base_tickets INTEGER DEFAULT 1, redeemed_tickets INTEGER DEFAULT 0, admin_adjustment INTEGER DEFAULT 0, PRIMARY KEY(channel_id,user_id));
     CREATE TABLE IF NOT EXISTS redemptions(redemption_id TEXT PRIMARY KEY, channel_id TEXT, user_id TEXT, reward_id TEXT, redeemed_at TEXT);
     CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT, user_id TEXT, name TEXT, old_adjustment INTEGER, new_adjustment INTEGER, reason TEXT, changed_at TEXT);
-    '''); conn.commit(); return conn
+    """)
+    conn.commit()
+    return DBWrapper(conn, postgres=False)
 
 def now(): return datetime.now(timezone.utc).isoformat()
 def require_config():
@@ -42,10 +81,10 @@ def cache_key():
 def require_user(): return session.get('user')
 
 def ensure_channel(user):
-    c=db(); c.execute('INSERT OR IGNORE INTO channels(channel_id,display_name,created_at) VALUES(?,?,?)',(user['id'],user['display_name'],now())); c.execute('UPDATE channels SET display_name=? WHERE channel_id=?',(user['display_name'],user['id'])); c.commit(); c.close()
+    c=db(); c.execute('INSERT INTO channels(channel_id,display_name,created_at) VALUES(?,?,?) ON CONFLICT(channel_id) DO NOTHING',(user['id'],user['display_name'],now())); c.execute('UPDATE channels SET display_name=? WHERE channel_id=?',(user['display_name'],user['id'])); c.commit(); c.close()
 
 def upsert_ticket(channel_id,user_id,login,name,base=1):
-    c=db(); c.execute('INSERT OR IGNORE INTO tickets(channel_id,user_id,login,name,base_tickets) VALUES(?,?,?,?,?)',(channel_id,user_id,login,name,base)); c.execute('UPDATE tickets SET login=?,name=? WHERE channel_id=? AND user_id=?',(login,name,channel_id,user_id)); c.commit(); c.close()
+    c=db(); c.execute('INSERT INTO tickets(channel_id,user_id,login,name,base_tickets) VALUES(?,?,?,?,?) ON CONFLICT(channel_id,user_id) DO NOTHING',(channel_id,user_id,login,name,base)); c.execute('UPDATE tickets SET login=?,name=? WHERE channel_id=? AND user_id=?',(login,name,channel_id,user_id)); c.commit(); c.close()
 
 def public_ticket_data(channel_id):
     c=db(); rows=c.execute('SELECT * FROM tickets WHERE channel_id=?',(channel_id,)).fetchall(); c.close()
@@ -142,7 +181,7 @@ def eventsub():
         if cfg and cfg['reward_id']==reward and rid:
             exists=c.execute('SELECT 1 FROM redemptions WHERE redemption_id=?',(rid,)).fetchone()
             if not exists:
-                c.execute('INSERT OR IGNORE INTO tickets(channel_id,user_id,login,name,base_tickets) VALUES(?,?,?,?,1)',(channel,uid,e.get('user_login',''),e.get('user_name','')))
+                c.execute('INSERT INTO tickets(channel_id,user_id,login,name,base_tickets) VALUES(?,?,?,?,1) ON CONFLICT(channel_id,user_id) DO NOTHING',(channel,uid,e.get('user_login',''),e.get('user_name','')))
                 row=c.execute('SELECT redeemed_tickets FROM tickets WHERE channel_id=? AND user_id=?',(channel,uid)).fetchone(); current=row['redeemed_tickets'] if row else 0
                 if current < cfg['max_extra']:
                     c.execute('UPDATE tickets SET redeemed_tickets=redeemed_tickets+1,login=?,name=? WHERE channel_id=? AND user_id=?',(e.get('user_login',''),e.get('user_name',''),channel,uid))
