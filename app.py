@@ -303,6 +303,22 @@ def edit_ticket(user_id):
     c.execute('INSERT INTO audit(channel_id,user_id,name,old_adjustment,new_adjustment,old_total,new_total,reason,changed_at) VALUES(?,?,?,?,?,?,?,?,?)',(u['id'],user_id,row['name'],old,new_adj,old_total,desired,reason,now()))
     c.commit(); c.close()
     return jsonify(ok=True,total=desired)
+
+@app.route('/api/admin/reset',methods=['POST'])
+def reset_all_tickets():
+    u=current_user()
+    if not u: return jsonify(ok=False,error='請先登入'),401
+    c=db()
+    rows=c.execute('SELECT base_tickets,redeemed_tickets,admin_adjustment FROM tickets WHERE channel_id=?',(u['id'],)).fetchall()
+    count=len(rows)
+    old_total=sum(max(0,int(r['base_tickets'] or 0)+int(r['redeemed_tickets'] or 0)+int(r['admin_adjustment'] or 0)) for r in rows)
+    c.execute('UPDATE tickets SET base_tickets=1, redeemed_tickets=0, admin_adjustment=0 WHERE channel_id=?',(u['id'],))
+    new_total=count
+    c.execute('INSERT INTO audit(channel_id,user_id,name,old_adjustment,new_adjustment,old_total,new_total,reason,changed_at) VALUES(?,?,?,?,?,?,?,?,?)',
+              (u['id'],'__ALL__','全體觀眾',0,0,old_total,new_total,'抽獎結束：全體票數重置為基本 1 張',now()))
+    c.commit(); c.close()
+    return jsonify(ok=True,count=count,total_tickets=new_total,old_total=old_total)
+
 @app.route('/api/admin/audit')
 def audit_api():
     u=require_user();

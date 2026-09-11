@@ -52,6 +52,24 @@ async function editTicket(id,current,name){
 $('updateButton').onclick=async()=>{msg.textContent='正在更新追隨者...';const r=await fetch('/api/followers'),d=await r.json();msg.textContent=d.ok?`✅ 已同步 ${d.count} 位追隨者，每人基本 1 張票`:'❌ '+d.error;loadTickets()};
 $('rewardButton').onclick=async()=>{if(!confirm('建立 Twitch 頻道點數「抽獎券」獎勵？'))return;await saveSettings();msg.textContent='建立中...';const r=await fetch('/api/reward',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cost:Number($('rewardCost').value),max_extra:Number($('maxExtra').value),unlimited:$('unlimitedExtra').checked})}),d=await r.json();msg.textContent=d.ok?(d.eventsub?.ok?'✅ 抽獎券建立完成，而且已開始自動收票':'⚠️ 獎勵建立成功，但自動收票尚未連線：'+(d.eventsub?.error||'請檢查 EventSub 設定')):'❌ '+d.error};
 $('drawButton').onclick=async()=>{msg.textContent='🎰 加權抽獎中...';const r=await fetch('/api/draw',{method:'POST'}),d=await r.json();if(!d.ok){msg.textContent='❌ '+d.error;return}$('winner').textContent='🎉 '+d.winner.name+' 🎉';$('drawInfo').textContent=`${d.winner.tickets} 張票 / 全池 ${d.total_tickets} 張（抽獎當下機率 ${d.winner.chance}%）`;msg.textContent='🎊 抽獎完成！'};
+
+async function resetAllTickets(){
+  const ok=confirm('確定要把所有人的抽獎券重置嗎？\n\n重置後：\n• 每個人只保留基本 1 張\n• 頻道點數換到的票會歸零\n• 管理員修正會歸零\n• 修改紀錄與抽獎設定不會刪除');
+  if(!ok)return;
+  const ok2=confirm('這個動作會影響所有觀眾，而且無法直接復原。確定要繼續？');
+  if(!ok2)return;
+  try{
+    msg.textContent='正在重置所有抽獎券...';
+    const r=await fetch('/api/admin/reset',{method:'POST',headers:{'Content-Type':'application/json'}}),d=await r.json();
+    if(!r.ok||!d.ok){msg.textContent='❌ '+(d.error||`重置失敗（HTTP ${r.status}）`);return}
+    msg.textContent=`✅ 已重置 ${d.count} 位觀眾：每人恢復基本 1 張（總票數 ${d.total_tickets}）`;
+    $('winner').textContent='等待抽獎...';
+    $('drawInfo').textContent='';
+    await loadTickets();
+  }catch(e){msg.textContent='❌ 重置抽獎券時發生錯誤：'+e.message}
+}
+
+$('resetButton')?.addEventListener('click',resetAllTickets);
 $('saveSettingsButton').onclick=saveSettings;
 $('unlimitedExtra').onchange=()=>{$('maxExtra').disabled=$('unlimitedExtra').checked};
 $('ticketSearch').addEventListener('input',renderTickets);
