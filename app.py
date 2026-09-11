@@ -50,11 +50,14 @@ def db():
             "CREATE TABLE IF NOT EXISTS channels(channel_id TEXT PRIMARY KEY, display_name TEXT, reward_id TEXT, reward_title TEXT DEFAULT '🎟️ 抽獎券', reward_cost INTEGER DEFAULT 500, max_extra BIGINT DEFAULT 10, created_at TEXT)" ,
             "CREATE TABLE IF NOT EXISTS tickets(channel_id TEXT, user_id TEXT, login TEXT, name TEXT, base_tickets INTEGER DEFAULT 1, redeemed_tickets BIGINT DEFAULT 0, admin_adjustment BIGINT DEFAULT 0, PRIMARY KEY(channel_id,user_id))" ,
             "CREATE TABLE IF NOT EXISTS redemptions(redemption_id TEXT PRIMARY KEY, channel_id TEXT, user_id TEXT, reward_id TEXT, redeemed_at TEXT)" ,
-            "CREATE TABLE IF NOT EXISTS audit(id BIGSERIAL PRIMARY KEY, channel_id TEXT, user_id TEXT, name TEXT, old_adjustment BIGINT, new_adjustment BIGINT, reason TEXT, changed_at TEXT)" ,
+            "CREATE TABLE IF NOT EXISTS audit(id BIGSERIAL PRIMARY KEY, channel_id TEXT, user_id TEXT, name TEXT, old_adjustment BIGINT, new_adjustment BIGINT, old_total BIGINT, new_total BIGINT, reason TEXT, changed_at TEXT)" ,
             "CREATE TABLE IF NOT EXISTS lottery_settings(channel_id TEXT PRIMARY KEY, reward_cost INTEGER NOT NULL DEFAULT 500, max_extra BIGINT NOT NULL DEFAULT 10, updated_at TEXT)" ,
         ]
         for statement in statements:
             conn.execute(statement)
+        # Backward-compatible migration for audit total columns.
+        conn.execute('ALTER TABLE audit ADD COLUMN IF NOT EXISTS old_total BIGINT')
+        conn.execute('ALTER TABLE audit ADD COLUMN IF NOT EXISTS new_total BIGINT')
         conn.commit()
         return DBWrapper(conn, postgres=True)
 
@@ -64,9 +67,13 @@ def db():
     CREATE TABLE IF NOT EXISTS channels(channel_id TEXT PRIMARY KEY, display_name TEXT, reward_id TEXT, reward_title TEXT DEFAULT '🎟️ 抽獎券', reward_cost INTEGER DEFAULT 500, max_extra INTEGER DEFAULT 10, created_at TEXT);
     CREATE TABLE IF NOT EXISTS tickets(channel_id TEXT, user_id TEXT, login TEXT, name TEXT, base_tickets INTEGER DEFAULT 1, redeemed_tickets INTEGER DEFAULT 0, admin_adjustment INTEGER DEFAULT 0, PRIMARY KEY(channel_id,user_id));
     CREATE TABLE IF NOT EXISTS redemptions(redemption_id TEXT PRIMARY KEY, channel_id TEXT, user_id TEXT, reward_id TEXT, redeemed_at TEXT);
-    CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT, user_id TEXT, name TEXT, old_adjustment INTEGER, new_adjustment INTEGER, reason TEXT, changed_at TEXT);
+    CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT, user_id TEXT, name TEXT, old_adjustment INTEGER, new_adjustment INTEGER, old_total INTEGER, new_total INTEGER, reason TEXT, changed_at TEXT);
     CREATE TABLE IF NOT EXISTS lottery_settings(channel_id TEXT PRIMARY KEY, reward_cost INTEGER NOT NULL DEFAULT 500, max_extra INTEGER NOT NULL DEFAULT 10, updated_at TEXT);
     """)
+    # Backward-compatible migration for older SQLite databases.
+    audit_cols={r['name'] for r in conn.execute('PRAGMA table_info(audit)').fetchall()}
+    if 'old_total' not in audit_cols: conn.execute('ALTER TABLE audit ADD COLUMN old_total INTEGER')
+    if 'new_total' not in audit_cols: conn.execute('ALTER TABLE audit ADD COLUMN new_total INTEGER')
     conn.commit()
     return DBWrapper(conn, postgres=False)
 
@@ -256,14 +263,17 @@ def edit_ticket(user_id):
     body=request.get_json(silent=True) or {}; reason=(body.get('reason') or '手動修正')[:200]
     c=db(); row=c.execute('SELECT * FROM tickets WHERE channel_id=? AND user_id=?',(u['id'],user_id)).fetchone()
     if not row:c.close(); return jsonify(ok=False,error='找不到這位觀眾'),404
-    desired=max(0,int(body.get('total',row['base_tickets']+row['redeemed_tickets']+row['admin_adjustment']))); new_adj=desired-row['base_tickets']-row['redeemed_tickets']; old=row['admin_adjustment']
-    c.execute('UPDATE tickets SET admin_adjustment=? WHERE channel_id=? AND user_id=?',(new_adj,u['id'],user_id)); c.execute('INSERT INTO audit(channel_id,user_id,name,old_adjustment,new_adjustment,reason,changed_at) VALUES(?,?,?,?,?,?,?)',(u['id'],user_id,row['name'],old,new_adj,reason,now())); c.commit(); c.close()
+    old_total=max(0,row['base_tickets']+row['redeemed_tickets']+row['admin_adjustment'])
+    desired=max(0,int(body.get('total',old_total))); new_adj=desired-row['base_tickets']-row['redeemed_tickets']; old=row['admin_adjustment']
+    c.execute('UPDATE tickets SET admin_adjustment=? WHERE channel_id=? AND user_id=?',(new_adj,u['id'],user_id))
+    c.execute('INSERT INTO audit(channel_id,user_id,name,old_adjustment,new_adjustment,old_total,new_total,reason,changed_at) VALUES(?,?,?,?,?,?,?,?,?)',(u['id'],user_id,row['name'],old,new_adj,old_total,desired,reason,now()))
+    c.commit(); c.close()
     return jsonify(ok=True,total=desired)
 @app.route('/api/admin/audit')
 def audit_api():
     u=require_user();
     if not u:return jsonify(ok=False,error='尚未登入'),401
-    c=db(); rows=c.execute('SELECT * FROM audit WHERE channel_id=? ORDER BY id DESC LIMIT 100',(u['id'],)).fetchall(); c.close(); return jsonify(ok=True,items=[dict(r) for r in rows])
+    c=db(); rows=c.execute('SELECT * FROM audit WHERE channel_id=? ORDER BY id DESC LIMIT 200',(u['id'],)).fetchall(); c.close(); return jsonify(ok=True,items=[dict(r) for r in rows])
 
 @app.route('/api/draw',methods=['POST'])
 def draw():

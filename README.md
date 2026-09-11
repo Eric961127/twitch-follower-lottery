@@ -20,3 +20,6 @@ Twitch Developer Console 的 OAuth Redirect URL 保留網站的 `/callback`。
 
 ## 重要
 正式長期使用前，建議把 SQLite 換成持久化資料庫（例如 PostgreSQL），否則 Render 免費 Web Service 的本機檔案不保證永久保存。
+
+## 修改紀錄
+管理頁新增「📋 修改紀錄」按鈕，可查看最近 200 筆手動票數修改，包含時間、觀眾、修改前/後票數、變動量與原因。紀錄儲存在同一個 PostgreSQL / SQLite 資料庫中。

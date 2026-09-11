@@ -57,3 +57,47 @@ $('unlimitedExtra').onchange=()=>{$('maxExtra').disabled=$('unlimitedExtra').che
 $('ticketSearch').addEventListener('input',renderTickets);
 try{const x=JSON.parse(localStorage.getItem('lotterySettings')||'null');if(x){$('rewardCost').value=x.reward_cost||500;$('unlimitedExtra').checked=!!x.unlimited;if(!x.unlimited&&x.max_extra>0)$('maxExtra').value=x.max_extra;$('maxExtra').disabled=!!x.unlimited}}catch(e){}
 loadSettings();loadTickets();setInterval(loadTickets,5000);
+
+// ----- 管理員修改紀錄 -----
+let auditItems=[];
+function fmtAuditTime(value){
+  if(!value)return '-';
+  const d=new Date(value);
+  if(Number.isNaN(d.getTime()))return value;
+  return new Intl.DateTimeFormat('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(d);
+}
+function renderAudit(){
+  const q=($('auditSearch')?.value||'').trim().toLowerCase();
+  const list=q?auditItems.filter(x=>(x.name||'').toLowerCase().includes(q)||(x.reason||'').toLowerCase().includes(q)||String(x.user_id||'').includes(q)):auditItems;
+  $('auditBody').innerHTML=list.map(x=>{
+    const oldTotal=x.old_total==null?null:Number(x.old_total), newTotal=x.new_total==null?null:Number(x.new_total);
+    const oldAdj=Number(x.old_adjustment||0), newAdj=Number(x.new_adjustment||0);
+    const before=oldTotal==null?`修正 ${oldAdj>0?'+':''}${oldAdj}`:oldTotal;
+    const after=newTotal==null?`修正 ${newAdj>0?'+':''}${newAdj}`:newTotal;
+    const delta=(newTotal!=null&&oldTotal!=null)?newTotal-oldTotal:newAdj-oldAdj;
+    const cls=delta>0?'change-pos':delta<0?'change-neg':'change-zero';
+    const deltaText=delta>0?`+${delta}`:String(delta);
+    return `<tr><td>${esc(fmtAuditTime(x.changed_at))}</td><td>${esc(x.name||x.user_id)}<small class="login">${esc(x.user_id||'')}</small></td><td>${esc(before)}</td><td><b>${esc(after)}</b></td><td class="${cls}">${esc(deltaText)}</td><td class="reason-cell">${esc(x.reason||'手動修正')}</td></tr>`;
+  }).join('') || '<tr><td colspan="6">目前沒有符合的修改紀錄</td></tr>';
+  $('auditStatus').textContent=`共 ${auditItems.length} 筆紀錄${q?`，目前顯示 ${list.length} 筆`:''}`;
+}
+async function loadAudit(){
+  $('auditStatus').textContent='載入修改紀錄中...';
+  try{
+    const r=await fetch('/api/admin/audit?ts='+Date.now(),{cache:'no-store'}),d=await r.json();
+    if(!r.ok||!d.ok){$('auditStatus').textContent='❌ '+(d.error||`讀取失敗（HTTP ${r.status}）`);return}
+    auditItems=d.items||[]; renderAudit();
+  }catch(e){$('auditStatus').textContent='❌ 讀取修改紀錄失敗：'+e.message}
+}
+function openAudit(){
+  $('auditModal').classList.add('open'); $('auditModal').setAttribute('aria-hidden','false'); document.body.style.overflow='hidden'; loadAudit();
+}
+function closeAudit(){
+  $('auditModal').classList.remove('open'); $('auditModal').setAttribute('aria-hidden','true'); document.body.style.overflow='';
+}
+$('auditButton')?.addEventListener('click',openAudit);
+$('auditClose')?.addEventListener('click',closeAudit);
+document.querySelectorAll('[data-close-audit]').forEach(x=>x.addEventListener('click',closeAudit));
+$('auditRefresh')?.addEventListener('click',loadAudit);
+$('auditSearch')?.addEventListener('input',renderAudit);
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('auditModal')?.classList.contains('open'))closeAudit()});

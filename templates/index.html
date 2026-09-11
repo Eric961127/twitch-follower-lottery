@@ -1,9 +1,20 @@
 <!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>3ric Twitch 加權抽獎</title><link rel="stylesheet" href="{{ url_for('static',filename='style.css') }}"></head><body><main class="container"><section class="card"><div class="logo">🎟️</div><h1>3ric Twitch 加權抽獎</h1><p class="subtitle">追隨者基本 1 張票，頻道點數可換額外票，票數公開、加權隨機抽獎。</p>
 {% if not user %}<a class="btn twitch" href="/login">使用 Twitch 登入</a>{% else %}<div class="profile"><img src="{{ user.profile_image_url }}" class="avatar"><div class="profile-text"><small>管理頻道</small><strong>{{ user.display_name }}</strong></div><a class="logout" href="/logout">登出</a></div>
-<div class="actions"><button id="updateButton" class="btn secondary">🔄 更新追隨者</button><button id="rewardButton" class="btn secondary">🎟️ 建立點數抽獎券</button><button id="drawButton" class="btn twitch">🎲 加權抽獎</button><a class="btn secondary" href="/public/{{ user.id }}" target="_blank">👀 公開票數頁</a></div>
+<div class="actions"><button id="updateButton" class="btn secondary">🔄 更新追隨者</button><button id="rewardButton" class="btn secondary">🎟️ 建立點數抽獎券</button><button id="drawButton" class="btn twitch">🎲 加權抽獎</button><a class="btn secondary" href="/public/{{ user.id }}" target="_blank">👀 公開票數頁</a><button id="auditButton" class="btn secondary">📋 修改紀錄</button></div>
 <div class="settings"><label>每張抽獎券點數<input id="rewardCost" type="number" min="1" value="500"></label><label>每人最多額外票<input id="maxExtra" type="number" min="1" value="10"><span class="checkline"><input id="unlimitedExtra" type="checkbox"> 無上限</span></label></div>
 <div class="setting-actions"><button id="saveSettingsButton" class="btn secondary">💾 儲存設定</button><small id="settingsStatus">設定會永久保存，若已建立 Twitch 獎勵也會同步更新。</small></div>
 <p id="message" class="message">準備完成</p><div class="winner"><span>🎉 中獎者</span><strong id="winner">等待抽獎...</strong><small id="drawInfo"></small></div>
 <div class="stats"><div class="stat"><span>參加人數</span><b id="participantCount">0</b></div><div class="stat"><span>總票數</span><b id="ticketCount">0</b></div></div>
 <h2>公開票數 / 管理員修正</h2><div class="searchbar"><input id="ticketSearch" type="search" placeholder="🔎 搜尋 Twitch 名稱 / ID"><span id="searchCount"></span></div><div class="table-wrap"><table><thead><tr><th>觀眾</th><th>基本</th><th>點數換票</th><th>修正</th><th>總票</th><th>機率</th><th>管理</th></tr></thead><tbody id="ticketBody"></tbody></table></div>
-{% endif %}<footer>抽獎使用系統安全亂數；管理員修正會留下紀錄。</footer></section></main>{% if user %}<script src="{{ url_for('static',filename='app.js',v='settings-v2') }}"></script>{% endif %}</body></html>
+{% endif %}<footer>抽獎使用系統安全亂數；管理員修正會留下紀錄。</footer></section></main>
+{% if user %}
+<div id="auditModal" class="modal" aria-hidden="true">
+  <div class="modal-backdrop" data-close-audit></div>
+  <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="auditTitle">
+    <div class="modal-head"><div><h2 id="auditTitle">📋 修改紀錄</h2><p>最多顯示最近 200 筆管理員手動票數修正。</p></div><button id="auditClose" class="icon-btn" aria-label="關閉">✕</button></div>
+    <div class="audit-tools"><input id="auditSearch" type="search" placeholder="🔎 搜尋觀眾或修改原因"><button id="auditRefresh" class="mini">重新整理</button></div>
+    <div id="auditStatus" class="audit-status">尚未載入</div>
+    <div class="table-wrap audit-table-wrap"><table><thead><tr><th>時間</th><th>觀眾</th><th>修改前</th><th>修改後</th><th>變動</th><th>原因</th></tr></thead><tbody id="auditBody"></tbody></table></div>
+  </section>
+</div>
+<script src="{{ url_for('static',filename='app.js',v='audit-v1') }}"></script>{% endif %}</body></html>
