@@ -106,10 +106,10 @@ def ensure_channel(user):
     c.commit(); c.close()
 
 def upsert_ticket(channel_id,user_id,login,name,base=1):
-    c=db(); c.execute('INSERT INTO tickets(channel_id,user_id,login,name,base_tickets) VALUES(?,?,?,?,?) ON CONFLICT(channel_id,user_id) DO NOTHING',(channel_id,user_id,login,name,base)); c.execute('UPDATE tickets SET login=?,name=?,is_following=1 WHERE channel_id=? AND user_id=?',(login,name,channel_id,user_id)); c.commit(); c.close()
+    c=db(); c.execute('INSERT INTO tickets(channel_id,user_id,login,name,base_tickets) VALUES(?,?,?,?,?) ON CONFLICT(channel_id,user_id) DO NOTHING',(channel_id,user_id,login,name,base)); c.execute('UPDATE tickets SET login=?,name=?,is_following=TRUE WHERE channel_id=? AND user_id=?',(login,name,channel_id,user_id)); c.commit(); c.close()
 
 def public_ticket_data(channel_id):
-    c=db(); rows=c.execute('SELECT * FROM tickets WHERE channel_id=? AND is_following=1',(channel_id,)).fetchall(); c.close()
+    c=db(); rows=c.execute('SELECT * FROM tickets WHERE channel_id=? AND is_following=TRUE',(channel_id,)).fetchall(); c.close()
     out=[]; total=0
     for r in rows:
         t=max(0,r['base_tickets']+r['redeemed_tickets']+r['admin_adjustment']); total+=t
@@ -159,10 +159,10 @@ def followers():
         # This prevents a partial/failed Twitch response from incorrectly deactivating followers.
         follower_cache[cache_key()]=arr
         c=db()
-        c.execute('UPDATE tickets SET is_following=0 WHERE channel_id=?',(user['id'],))
+        c.execute('UPDATE tickets SET is_following=FALSE WHERE channel_id=?',(user['id'],))
         for p in arr:
-            c.execute('INSERT INTO tickets(channel_id,user_id,login,name,base_tickets,is_following) VALUES(?,?,?,?,1,1) ON CONFLICT(channel_id,user_id) DO NOTHING',(user['id'],p['id'],p['login'],p['name']))
-            c.execute('UPDATE tickets SET login=?,name=?,is_following=1 WHERE channel_id=? AND user_id=?',(p['login'],p['name'],user['id'],p['id']))
+            c.execute('INSERT INTO tickets(channel_id,user_id,login,name,base_tickets,is_following) VALUES(?,?,?,?,1,TRUE) ON CONFLICT(channel_id,user_id) DO NOTHING',(user['id'],p['id'],p['login'],p['name']))
+            c.execute('UPDATE tickets SET login=?,name=?,is_following=TRUE WHERE channel_id=? AND user_id=?',(p['login'],p['name'],user['id'],p['id']))
         c.commit(); c.close()
         return jsonify(ok=True,count=len(arr),followers=arr)
     except requests.RequestException as e:return jsonify(ok=False,error=f'Twitch API 連線失敗：{e}'),502
