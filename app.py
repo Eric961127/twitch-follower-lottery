@@ -48,7 +48,7 @@ def db():
         conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
         statements = [
             "CREATE TABLE IF NOT EXISTS channels(channel_id TEXT PRIMARY KEY, display_name TEXT, reward_id TEXT, reward_title TEXT DEFAULT '🎟️ 抽獎券', reward_cost INTEGER DEFAULT 500, max_extra BIGINT DEFAULT 10, created_at TEXT)" ,
-            "CREATE TABLE IF NOT EXISTS tickets(channel_id TEXT, user_id TEXT, login TEXT, name TEXT, base_tickets INTEGER DEFAULT 1, redeemed_tickets BIGINT DEFAULT 0, admin_adjustment BIGINT DEFAULT 0, PRIMARY KEY(channel_id,user_id))" ,
+            "CREATE TABLE IF NOT EXISTS tickets(channel_id TEXT, user_id TEXT, login TEXT, name TEXT, base_tickets INTEGER DEFAULT 1, redeemed_tickets BIGINT DEFAULT 0, admin_adjustment BIGINT DEFAULT 0, is_following BOOLEAN NOT NULL DEFAULT TRUE, PRIMARY KEY(channel_id,user_id))" ,
             "CREATE TABLE IF NOT EXISTS redemptions(redemption_id TEXT PRIMARY KEY, channel_id TEXT, user_id TEXT, reward_id TEXT, redeemed_at TEXT)" ,
             "CREATE TABLE IF NOT EXISTS audit(id BIGSERIAL PRIMARY KEY, channel_id TEXT, user_id TEXT, name TEXT, old_adjustment BIGINT, new_adjustment BIGINT, old_total BIGINT, new_total BIGINT, reason TEXT, changed_at TEXT)" ,
             "CREATE TABLE IF NOT EXISTS lottery_settings(channel_id TEXT PRIMARY KEY, reward_cost INTEGER NOT NULL DEFAULT 500, max_extra BIGINT NOT NULL DEFAULT 10, updated_at TEXT)" ,
@@ -58,6 +58,7 @@ def db():
         # Backward-compatible migration for audit total columns.
         conn.execute('ALTER TABLE audit ADD COLUMN IF NOT EXISTS old_total BIGINT')
         conn.execute('ALTER TABLE audit ADD COLUMN IF NOT EXISTS new_total BIGINT')
+        conn.execute('ALTER TABLE tickets ADD COLUMN IF NOT EXISTS is_following BOOLEAN NOT NULL DEFAULT TRUE')
         conn.commit()
         return DBWrapper(conn, postgres=True)
 
@@ -65,12 +66,14 @@ def db():
     conn.row_factory = sqlite3.Row
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS channels(channel_id TEXT PRIMARY KEY, display_name TEXT, reward_id TEXT, reward_title TEXT DEFAULT '🎟️ 抽獎券', reward_cost INTEGER DEFAULT 500, max_extra INTEGER DEFAULT 10, created_at TEXT);
-    CREATE TABLE IF NOT EXISTS tickets(channel_id TEXT, user_id TEXT, login TEXT, name TEXT, base_tickets INTEGER DEFAULT 1, redeemed_tickets INTEGER DEFAULT 0, admin_adjustment INTEGER DEFAULT 0, PRIMARY KEY(channel_id,user_id));
+    CREATE TABLE IF NOT EXISTS tickets(channel_id TEXT, user_id TEXT, login TEXT, name TEXT, base_tickets INTEGER DEFAULT 1, redeemed_tickets INTEGER DEFAULT 0, admin_adjustment INTEGER DEFAULT 0, is_following INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(channel_id,user_id));
     CREATE TABLE IF NOT EXISTS redemptions(redemption_id TEXT PRIMARY KEY, channel_id TEXT, user_id TEXT, reward_id TEXT, redeemed_at TEXT);
     CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT, user_id TEXT, name TEXT, old_adjustment INTEGER, new_adjustment INTEGER, old_total INTEGER, new_total INTEGER, reason TEXT, changed_at TEXT);
     CREATE TABLE IF NOT EXISTS lottery_settings(channel_id TEXT PRIMARY KEY, reward_cost INTEGER NOT NULL DEFAULT 500, max_extra INTEGER NOT NULL DEFAULT 10, updated_at TEXT);
     """)
     # Backward-compatible migration for older SQLite databases.
+    ticket_cols={r['name'] for r in conn.execute('PRAGMA table_info(tickets)').fetchall()}
+    if 'is_following' not in ticket_cols: conn.execute('ALTER TABLE tickets ADD COLUMN is_following INTEGER NOT NULL DEFAULT 1')
     audit_cols={r['name'] for r in conn.execute('PRAGMA table_info(audit)').fetchall()}
     if 'old_total' not in audit_cols: conn.execute('ALTER TABLE audit ADD COLUMN old_total INTEGER')
     if 'new_total' not in audit_cols: conn.execute('ALTER TABLE audit ADD COLUMN new_total INTEGER')
@@ -103,10 +106,10 @@ def ensure_channel(user):
     c.commit(); c.close()
 
 def upsert_ticket(channel_id,user_id,login,name,base=1):
-    c=db(); c.execute('INSERT INTO tickets(channel_id,user_id,login,name,base_tickets) VALUES(?,?,?,?,?) ON CONFLICT(channel_id,user_id) DO NOTHING',(channel_id,user_id,login,name,base)); c.execute('UPDATE tickets SET login=?,name=? WHERE channel_id=? AND user_id=?',(login,name,channel_id,user_id)); c.commit(); c.close()
+    c=db(); c.execute('INSERT INTO tickets(channel_id,user_id,login,name,base_tickets) VALUES(?,?,?,?,?) ON CONFLICT(channel_id,user_id) DO NOTHING',(channel_id,user_id,login,name,base)); c.execute('UPDATE tickets SET login=?,name=?,is_following=1 WHERE channel_id=? AND user_id=?',(login,name,channel_id,user_id)); c.commit(); c.close()
 
 def public_ticket_data(channel_id):
-    c=db(); rows=c.execute('SELECT * FROM tickets WHERE channel_id=?',(channel_id,)).fetchall(); c.close()
+    c=db(); rows=c.execute('SELECT * FROM tickets WHERE channel_id=? AND is_following=1',(channel_id,)).fetchall(); c.close()
     out=[]; total=0
     for r in rows:
         t=max(0,r['base_tickets']+r['redeemed_tickets']+r['admin_adjustment']); total+=t
@@ -152,8 +155,15 @@ def followers():
             r.raise_for_status(); d=r.json(); arr += [{'id':i['user_id'],'login':i['user_login'],'name':i['user_name'],'followed_at':i['followed_at']} for i in d.get('data',[])]
             cursor=d.get('pagination',{}).get('cursor')
             if not cursor:break
+        # Only after Twitch pagination completed successfully do we change eligibility.
+        # This prevents a partial/failed Twitch response from incorrectly deactivating followers.
         follower_cache[cache_key()]=arr
-        for p in arr: upsert_ticket(user['id'],p['id'],p['login'],p['name'],1)
+        c=db()
+        c.execute('UPDATE tickets SET is_following=0 WHERE channel_id=?',(user['id'],))
+        for p in arr:
+            c.execute('INSERT INTO tickets(channel_id,user_id,login,name,base_tickets,is_following) VALUES(?,?,?,?,1,1) ON CONFLICT(channel_id,user_id) DO NOTHING',(user['id'],p['id'],p['login'],p['name']))
+            c.execute('UPDATE tickets SET login=?,name=?,is_following=1 WHERE channel_id=? AND user_id=?',(p['login'],p['name'],user['id'],p['id']))
+        c.commit(); c.close()
         return jsonify(ok=True,count=len(arr),followers=arr)
     except requests.RequestException as e:return jsonify(ok=False,error=f'Twitch API 連線失敗：{e}'),502
 
@@ -306,7 +316,7 @@ def edit_ticket(user_id):
 
 @app.route('/api/admin/reset',methods=['POST'])
 def reset_all_tickets():
-    u=current_user()
+    u=require_user()
     if not u: return jsonify(ok=False,error='請先登入'),401
     c=db()
     rows=c.execute('SELECT base_tickets,redeemed_tickets,admin_adjustment FROM tickets WHERE channel_id=?',(u['id'],)).fetchall()
